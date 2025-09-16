@@ -1,61 +1,45 @@
 import { useEffect, useRef, useState } from 'react'
+import { ErrorBoundary } from './ErrorBoundary'
 import NavBar, { type Tab } from './components/NavBar'
 import ClientsPage from './pages/ClientsPage'
 import SessionsPage from './pages/SessionsPage'
 import ReportPage from './pages/ReportPage'
-// import ExportPage from './pages/ExportPage' // optional
+import { DataProvider } from './lib/DataContext'
 
-const KNOWN_TABS = ['clients', 'sessions', 'report'] as const
-
-function isTab(x: string): x is Tab {
-  // includes() liefert nur boolean; der Type-Guard macht daraus Tab‑Narrowing
-  return (KNOWN_TABS as readonly string[]).includes(x)
-}
+/** Für kurzen Sichtbarkeits-Test auf true setzen */
+const SMOKE_TEST = false
 
 function parseTabFromHash(hash: string): Tab | null {
   const raw = hash.replace(/^#/, '')
-  return isTab(raw) ? raw : null
+  return raw === 'clients' || raw === 'sessions' || raw === 'report' ? (raw as Tab) : null
 }
 
-export default function App() {
+/** ---- Alle Hooks leben hier: KEINE bedingten Returns davor ---- */
+function AppShell() {
   const [active, setActive] = useState<Tab>(() => {
     if (typeof window === 'undefined') return 'clients' as Tab
     return parseTabFromHash(window.location.hash) ?? ('clients' as Tab)
   })
 
-  const mainRef = useRef<HTMLElement | null>(null)
+  // Übergabe eines Client-Filters an die Sitzungsseite
+  const [sessionsClientFilter, setSessionsClientFilter] = useState<string | null>(null)
 
+  // A11y + Hash-Sync
+  const mainRef = useRef<HTMLElement | null>(null)
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      if (window.location.hash !== `#${active}`) {
-        window.history.replaceState(null, '', `#${active}`)
+      const wanted = `#${active}`
+      if (window.location.hash !== wanted) {
+        window.history.replaceState(null, '', wanted)
       }
     }
     mainRef.current?.focus()
   }, [active])
 
-  const scrollToId = (id: string) => {
-    const prefersReducedMotion =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-
-    const el = document.getElementById(id)
-    if (el) {
-      el.scrollIntoView({
-        behavior: prefersReducedMotion ? 'auto' : 'smooth',
-        block: 'start',
-      })
-      ;(el as HTMLElement).focus?.()
-    }
-  }
-
-  const handleGoToClient = (id: string | number) => {
-    setActive('clients')
-    const defer =
-      typeof queueMicrotask === 'function'
-        ? queueMicrotask
-        : (cb: () => void) => setTimeout(cb, 0)
-    defer(() => scrollToId(`client-${id}`))
+  const openSessionsForClient = (clientId: string) => {
+    setSessionsClientFilter(clientId)
+    setActive('sessions')
+    if (typeof window !== 'undefined') window.history.replaceState(null, '', '#sessions')
   }
 
   return (
@@ -70,12 +54,37 @@ export default function App() {
         <NavBar active={active} onChange={setActive} />
       </div>
 
-      <main id="main" ref={mainRef} role="main" tabIndex={-1}>
-        {active === 'clients'  && <ClientsPage />}
-        {active === 'sessions' && <SessionsPage onGoToClient={handleGoToClient} />}
-        {active === 'report'   && <ReportPage />}
-        {/* {active === 'export'   && <ExportPage />} */}
-      </main>
+      <DataProvider>
+        <main id="main" ref={mainRef} role="main" tabIndex={-1}>
+          {active === 'clients'  && <ClientsPage onOpenSessions={openSessionsForClient} />}
+          {active === 'sessions' && (
+            <SessionsPage
+              filterClientId={sessionsClientFilter}
+              onFilterAcknowledged={() => setSessionsClientFilter(null)}
+            />
+          )}
+          {active === 'report'   && <ReportPage />}
+        </main>
+      </DataProvider>
     </div>
+  )
+}
+
+/** Optionaler Sichtbarkeits-Test — enthält KEINE Hooks */
+function SmokeScreen() {
+  return (
+    <div style={{ padding: 24, fontSize: 18 }}>
+      <h1>✅ App lebt</h1>
+      <p>Wenn du das siehst, funktionieren <code>index.html</code>, <code>main.tsx</code> und CSS.</p>
+    </div>
+  )
+}
+
+/** Wrapper ohne Hooks → entscheidet nur, was gerendert wird */
+export default function App() {
+  return (
+    <ErrorBoundary>
+      {SMOKE_TEST ? <SmokeScreen /> : <AppShell />}
+    </ErrorBoundary>
   )
 }
