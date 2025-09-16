@@ -69,7 +69,7 @@ function QueryBuilder(){
         <button className="btn btnPrimary">Abfrage ausführen</button>
         <button className="btn">Abfrage speichern</button>
         <button className="btn">Drucken</button>
-        <button className="btn">Grafik versenden</button>
+        <button className="btn">Grafik anzeigen</button>
       </div>
     </>
   )

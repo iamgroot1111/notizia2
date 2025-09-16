@@ -1,80 +1,92 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import NavBar, { type Tab } from './components/NavBar'
 import ClientsPage from './pages/ClientsPage'
 import SessionsPage from './pages/SessionsPage'
 import ReportPage from './pages/ReportPage'
-// import ExportPage from './pages/ExportPage' // optional
 
-const KNOWN_TABS = ['clients', 'sessions', 'report'] as const
-
-function isTab(x: string): x is Tab {
-  // includes() liefert nur boolean; der Type-Guard macht daraus Tab‑Narrowing
-  return (KNOWN_TABS as readonly string[]).includes(x)
-}
-
+/** Hash -> Tab (clients | sessions | report) */
 function parseTabFromHash(hash: string): Tab | null {
-  const raw = hash.replace(/^#/, '')
-  return isTab(raw) ? raw : null
+  const raw = hash.replace(/^#\/?/, '')
+  return raw === 'clients' || raw === 'sessions' || raw === 'report' ? raw : null
 }
 
 export default function App() {
+  // Startzustand aus der URL lesen (oder 'clients')
   const [active, setActive] = useState<Tab>(() => {
-    if (typeof window === 'undefined') return 'clients' as Tab
-    return parseTabFromHash(window.location.hash) ?? ('clients' as Tab)
+    if (typeof window === 'undefined') return 'clients'
+    return parseTabFromHash(window.location.hash) ?? 'clients'
   })
+  // Key, um die SessionsPage beim Menü-Klick neu zu montieren
+  const [sessionsKey, setSessionsKey] = useState(0)
 
-  const mainRef = useRef<HTMLElement | null>(null)
-
+  // Auf Hash-Änderungen reagieren → active setzen
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      if (window.location.hash !== `#${active}`) {
-        window.history.replaceState(null, '', `#${active}`)
-      }
+    const onHashChange = () => {
+      const t = parseTabFromHash(window.location.hash)
+      if (t) setActive(t)
     }
-    mainRef.current?.focus()
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  // active -> Hash spiegeln (nur wenn abweichend)
+  useEffect(() => {
+    const h = (window.location.hash || '').replace(/^#\/?/, '')
+    if (h !== active) window.history.replaceState(null, '', `#${active}`)
   }, [active])
 
-  const scrollToId = (id: string) => {
-    const prefersReducedMotion =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-
-    const el = document.getElementById(id)
-    if (el) {
-      el.scrollIntoView({
-        behavior: prefersReducedMotion ? 'auto' : 'smooth',
-        block: 'start',
-      })
-      ;(el as HTMLElement).focus?.()
+  // Menüwechsel behandeln (Sitzungen immer neutral & frisch)
+  function handleNavChange(tab: Tab) {
+    if (tab === 'sessions') {
+      // Kontext leeren -> neutrale Sitzungen
+      sessionStorage.removeItem('sessionsClientId')
+      sessionStorage.removeItem('sessionsCaseId')
+      sessionStorage.removeItem('openSessionId')
+      sessionStorage.removeItem('openCreateSession')
+      // Frisch montieren, damit wirklich alles zurückgesetzt ist
+      setSessionsKey((k) => k + 1)
     }
+    setActive(tab)
   }
 
-  const handleGoToClient = (id: string | number) => {
+  // Aus Sitzungen zu einem Klienten springen (optional)
+  function goToClient(id: number) {
     setActive('clients')
-    const defer =
-      typeof queueMicrotask === 'function'
-        ? queueMicrotask
-        : (cb: () => void) => setTimeout(cb, 0)
-    defer(() => scrollToId(`client-${id}`))
+    // Nach dem Tabwechsel zum Klienten scrollen
+    setTimeout(() => {
+      document.getElementById(`client-${id}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
+    }, 0)
   }
 
   return (
     <div className="container">
+      {/* Skip-Link für Screenreader/Keyboard */}
       <a href="#main" className="skipLink">Zum Inhalt springen</a>
 
+      {/* Sticky Topbar */}
       <div className="topbar">
         <div className="headerBar" role="banner">
           <img src="/notizia_logo.png" alt="Notizia" className="logo" />
           <h1 className="title">Heilerfolge sichtbar machen</h1>
         </div>
-        <NavBar active={active} onChange={setActive} />
+        <NavBar active={active} onChange={handleNavChange} />
       </div>
 
-      <main id="main" ref={mainRef} role="main" tabIndex={-1}>
-        {active === 'clients'  && <ClientsPage />}
-        {active === 'sessions' && <SessionsPage onGoToClient={handleGoToClient} />}
-        {active === 'report'   && <ReportPage />}
-        {/* {active === 'export'   && <ExportPage />} */}
+      {/* Hauptbereich */}
+      <main id="main" role="main" tabIndex={-1}>
+        {active === 'clients' && <ClientsPage />}
+
+        {active === 'sessions' && (
+          <SessionsPage
+            key={sessionsKey}
+            onGoToClient={goToClient}   // optional, falls deine Seite das nutzt
+          />
+        )}
+
+        {active === 'report' && <ReportPage />}
       </main>
     </div>
   )
