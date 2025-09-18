@@ -44,16 +44,17 @@ body{margin:0;background:var(--bg);color:var(--text);
 
 /* Karten/Listen/Zeilen */
 .card{background:var(--panel);border:1px solid var(--stroke);border-radius:var(--radius);padding:12px;box-shadow:var(--shadow)}
-.formGrid{display:grid;gap:8px}
 .form{display:grid;gap:8px;margin:16px 0}
 .list{list-style:none;padding:0;display:grid;gap:10px}
 .item{background:var(--panel);border:1px solid var(--stroke);border-radius:var(--radius);padding:12px;box-shadow:var(--shadow)}
 .item:hover{border-color:var(--stroke-strong)}
-.row{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.row{display:flex;flex-wrap: wrap;justify-content:flex-start;align-items:flex-end;gap:12px}
 .row > *{min-width:0}
 .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .editFields{display:grid;gap:6px;margin-top:6px}
 .editing{background:var(--panel-tint)}
+
+.card, .item { width: 100%; max-width: 100%; overflow-wrap: anywhere; }
 
 /* Inputs/Buttons */
 .input{width:100%;border:1px solid #d1d5db;border-radius:10px;padding:8px 10px;background:#fff;transition:.15s}
@@ -72,6 +73,63 @@ body{margin:0;background:var(--bg);color:var(--text);
 .btnSecondary{opacity:.95}
 .btnDanger{border-color:#ef4444;color:#ef4444;background:#fff}
 
+/* 1) Labels stets über dem Feld */
+label { display: grid; gap: 6px; font-weight: 600; }
+
+/* 2) Einheitliche Eingabehöhen + Schrift (iOS: kein Auto‑Zoom) */
+.input, select.input, textarea.input { height: 44px; font-size: 16px; }
+.btn, .btnPrimary { min-height: 44px; font-size: 16px; }
+
+/* 4) Felder in .row: zwei Spalten auf Desktop, 1 Spalte auf Mobil */
+.row > label,
+.row > .field,                  /* falls du .field verwendest */
+.row > .input,
+.row > select.input,
+.row > textarea.input,
+.row > .kv, .row > .kv * {
+  flex: 1 1 220px;              /* Mindestbreite verhindert "Nar" */
+  min-width: 200px;
+}
+
+main .modal {
+  position: static;
+  inset: auto;
+  width: auto;
+  max-width: 100%;
+  box-shadow: var(--shadow);
+  border-radius: var(--radius);
+}
+
+/* 5) Buttons in Formularreihen */
+.row > .btn, .row > .actions .btn { 
+  flex: 0 0 auto;               /* schrumpfen nicht kleiner als Inhalt */
+  max-width: 100%;
+}
+@media (max-width: 680px) {
+  .row > .btn, .row > .actions .btn, .form .btn, .form .actions .btn {
+    width: 100%;                /* auf Mobil volle Zeile, kein Überstand */
+  }
+}
+
+/* 6) Universell nutzbares Grid für komplexere Formulare */
+.formGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.formGrid > * { grid-column: span 6; }   /* 2 Spalten */
+@media (max-width: 720px) {
+  .formGrid > * { grid-column: 1 / -1; } /* Mobil: 1 Spalte */
+}
+.formGrid .actions .btn { justify-self: start; }
+@media (max-width: 720px) {
+  .formGrid .actions .btn { width: 100%; }
+}
+
+/* 7) Kleine kosmetische Fixes */
+.input::placeholder { color: #8a94ab; }
+.btn { max-width: 100%; white-space: nowrap; } /* kein Überlaufen */
+
 /* Hinweise */
 .hint{opacity:.7}
 .note{margin-top:6px}.noteLabel{font-weight:600;margin-bottom:2px}.notePre{white-space:pre-wrap;margin:0;opacity:.9}
@@ -82,6 +140,13 @@ body{margin:0;background:var(--bg);color:var(--text);
 .modalHeader{padding:16px 18px;border-bottom:1px solid #eee;font-size:18px;font-weight:700}
 .modalBody{padding:14px 18px;overflow:auto;display:grid;gap:10px}
 .modalActions{padding:12px 18px;border-top:1px solid #eee;display:flex;gap:10px;justify-content:flex-end}
+
+/* Radio-Gruppen hübsch unter einem Label */
+.field > span { display:block; margin-bottom: 6px; font-weight: 600; }
+.field .row { align-items: center; gap: 12px; }
+
+/* Texte in Karten dürfen umbrechen, ragen nicht raus */
+.card, .item, .hint { word-break: break-word; }
 
 /* ClientCases-Bausteine */
 .caseBlock{margin-top:12px}
@@ -155,3 +220,60 @@ body{margin:0;background:var(--bg);color:var(--text);
 
 /* Label-Text oberhalb des Eingabefelds (verhindert Überdeckung durch Fokus-Ring) */
 .field > span, label > span { display:block; margin-bottom:4px; }
+/* ===== Form-Layout – KONSTANT & MOBIL-FEST ===== */
+
+/* Karten/Container dürfen nie breiter werden */
+.card, .item { width: 100%; max-width: 100%; overflow-wrap: anywhere; }
+
+/* Falls .modal irrtümlich im Flow gerendert wird: nicht breiter als Container */
+main .modal {
+  position: static; inset: auto; width: auto; max-width: 100%;
+  box-shadow: var(--shadow); border-radius: var(--radius);
+}
+
+/* Labels immer oben */
+label { display: grid; gap: 6px; font-weight: 600; }
+
+/* Touch-Höhen & iOS-Schrift */
+.input, select.input, textarea.input { height: 44px; font-size: 16px; }
+.btn, .btnPrimary { min-height: 44px; font-size: 16px; }
+.row > * { min-width: 0; }
+
+/* Felder in Reihen: Mindestbreite gegen „Nar“ */
+.row > label,
+.row > .field,
+.row > .input,
+.row > select.input,
+.row > textarea.input,
+.row > .kv, .row > .kv * {
+  flex: 1 1 240px; min-width: 220px;
+}
+
+/* Radio-/Checkbox-Gruppen unter einem Label: gleichmäßig */
+.field .row { 
+  display: grid; 
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px; align-items: center;
+}
+.field .row label { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Buttons: auf Mobil 100% Breite, kein Überstand */
+.row > .btn, .row .actions .btn, .form .btn, .form .actions .btn { max-width: 100%; }
+@media (max-width: 680px) {
+  .row > .btn, .row .actions .btn, .form .btn, .form .actions .btn { width: 100%; }
+}
+
+/* Universelles 2-Spalten-Grid -> Mobil 1 Spalte */
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+/* Aktionen in Grids linksbündig; Mobil: volle Breite */
+.formGrid .actions .btn { justify-self: start; }
+@media (max-width: 720px) {
+  .formGrid .actions .btn { width: 100%; }
+}
+
+/* Texte in Karten dürfen umbrechen */
+.card, .item, .hint { word-break: break-word; }

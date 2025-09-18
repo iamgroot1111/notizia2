@@ -1,355 +1,511 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type React from 'react'
-import type { Client, Gender } from '../shared/domain'
-import { storage } from '../shared/storage'
-import {
-  filterAndSortClients,
-  validateClientInput,
-  clientLabelForDelete
-} from '../shared/clients'
-import ClientCases from '../components/ClientCases'
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { Client, Gender, Anamnesis } from "../shared/domain";
+import { storage } from "../shared/storage";
+import { filterAndSortClients, validateClientInput } from "../shared/clients";
+import AnamnesisForm from "../components/AnamnesisForm";
+import { learn } from "../shared/suggestions";
 
-export default function ClientsPage() {
-  // ---- Daten ----
-  const [clients, setClients] = useState<Client[]>([])
+/** Strikter Typ für Storage ohne any */
+type StorageAPI = {
+  listClients: () => Promise<Client[]>;
+  addClient: (
+    name: string,
+    gender: Gender,
+    age: number | null
+  ) => Promise<void>;
+  updateClient?: (
+    patch: { id: number } & Partial<Client>
+  ) => Promise<Client | void>;
+  deleteClient?: (id: number) => Promise<void>;
+};
 
-  // Neuer Klient
-  const [name, setName] = useState('')
-  const [newGender, setNewGender] = useState<Gender>('w')
-  const [newAge, setNewAge] = useState<number | ''>('')
+const s = storage as unknown as StorageAPI;
 
-  // Suche
-  const [query, setQuery] = useState('')
-
-  // Edit
-  const [editingId, setEditingId] = useState<number | null>(null)
-  const [draftName, setDraftName] = useState('')
-  const [draftGender, setDraftGender] =
-    useState<Gender | null | undefined>(undefined)
-  const [draftAge, setDraftAge] =
-    useState<number | null | undefined>(undefined)
-
-  // Laden
-  useEffect(() => {
-    void refresh()
-  }, [])
-  async function refresh() {
-    setClients(await storage.listClients())
-  }
-
-  // ---- Aktionen: Neu ----
-  const onCreateKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
-    const check = validateClientInput(name)
-    if (e.key === 'Enter' && check.ok) {
-      e.preventDefault()
-      void createClient()
-    }
-  }
-
-  async function createClient() {
-    const check = validateClientInput(name)
-    if (!check.ok) return
-    await storage.addClient(
-      check.value.name,
-      newGender,
-      newAge === '' ? null : Number(newAge),
-    )
-    setName(''); setNewGender('w'); setNewAge('')
-    await refresh()
-  }
-
-  // ---- Aktionen: Edit ----
-  function startEdit(c: Client) {
-    setEditingId(c.id)
-    setDraftName(c.name)
-    setDraftGender(c.gender ?? undefined)
-    setDraftAge(c.age ?? null)
-  }
-  function cancelEdit() {
-    setEditingId(null)
-    setDraftName('')
-    setDraftGender(undefined)
-    setDraftAge(undefined)
-  }
-  async function saveEdit() {
-    if (editingId == null) return
-    const check = validateClientInput(draftName)
-    if (!check.ok) return
-    const current = clients.find(c => c.id === editingId)!
-    await storage.updateClient(
-      editingId,
-      check.value.name,
-      draftGender ?? current.gender,
-      draftAge ?? (current.age ?? null)
-    )
-    cancelEdit()
-    await refresh()
-  }
-  async function remove(id: number) {
-    const label = clientLabelForDelete(clients, id)
-    if (!window.confirm(`Klient „${label}“ wirklich löschen?`)) return
-    if (editingId === id) cancelEdit()
-    await storage.deleteClient(id)
-    setClients(prev => prev.filter(c => c.id !== id))
-  }
-
-  // ---- Suche / Vorschläge / A–Z ----
-  const filtered = useMemo(
-    () => filterAndSortClients(clients, query),
-    [clients, query]
-  )
-
-  const suggestionList = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return []
-    const seen = new Set<string>()
-    return clients
-      .filter(c => c.name.toLowerCase().includes(q))
-      .map(c => c.name)
-      .filter(n => (seen.has(n) ? false : (seen.add(n), true)))
-      .slice(0, 8)
-  }, [clients, query])
-
-  // Tastatur im Edit-Feld
-  const onEditKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void saveEdit() }
-    if (e.key === 'Escape') { e.preventDefault(); cancelEdit() }
-  }
-
-  // UI-Helpers
-  const addCheck = validateClientInput(name)
-  const nameHas = name.trim().length > 0
-  const nameInputClass = `input narrowLg ${!addCheck.ok ? 'inputInvalid' : (nameHas ? 'inputOk' : '')}`
-
-  const saveCheck = validateClientInput(draftName)
-
-  // Sessions-Navigation
-  function goToSessionsForClient(clientId: number) {
-    sessionStorage.removeItem('sessionsCaseId')
-    sessionStorage.removeItem('openSessionId')
-    sessionStorage.removeItem('openCreateSession')
-    sessionStorage.setItem('sessionsClientId', String(clientId))
-    window.location.hash = '#sessions'
-  }
-  function goToNewSessionForClient(clientId: number) {
-    sessionStorage.removeItem('sessionsCaseId')
-    sessionStorage.removeItem('openSessionId')
-    sessionStorage.setItem('sessionsClientId', String(clientId))
-    sessionStorage.setItem('openCreateSession', '1')
-    window.location.hash = '#sessions'
-  }
-function handleCreateSubmit(e: React.FormEvent) {
-  e.preventDefault()
-  void createClient()
+/* ------------- Hash-Helpers (Deep Links) ------------- */
+function parseSelectedIdFromHash(): number | null {
+  // akzeptiert #clients?id=42
+  const h = window.location.hash;
+  if (!h.startsWith("#clients")) return null;
+  const qIndex = h.indexOf("?");
+  if (qIndex === -1) return null;
+  const qs = new URLSearchParams(h.slice(qIndex + 1));
+  const id = qs.get("id");
+  return id ? Number(id) : null;
+}
+function gotoClient(id: number) {
+  window.location.hash = `#clients?id=${id}`;
 }
 
-  // Scroll-Ref für erste Karte (optional)
-  const firstCardRef = useRef<HTMLLIElement | null>(null)
+export default function ClientsPage() {
+  // Daten
+  const [clients, setClients] = useState<Client[]>([]);
 
-  // ---- Render ----
+  // Neuer Klient (Form)
+  const [name, setName] = useState("");
+  const [newGender, setNewGender] = useState<Gender>("w");
+  const [newAge, setNewAge] = useState<number | "">("");
+  const [anamnesis, setAnamnesis] = useState<Anamnesis>({});
+
+  // Suche + Auswahl
+  const [query, setQuery] = useState("");
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+
+  // Edit-Modus + Draft für Karteikarte
+  const [editMode, setEditMode] = useState(false);
+  const [draft, setDraft] = useState<{
+    name: string;
+    gender: Gender | null;
+    age: number | null;
+    anamnesis: Anamnesis | null;
+  }>({ name: "", gender: null, age: null, anamnesis: null });
+
+  const refresh = useCallback(async () => {
+    const list = await s.listClients();
+    setClients(list);
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Hash lesen (Deep-Link auf #clients?id=…)
+  useEffect(() => {
+    const apply = () => setSelectedId(parseSelectedIdFromHash());
+    apply();
+    window.addEventListener("hashchange", apply);
+    return () => window.removeEventListener("hashchange", apply);
+  }, []);
+
+  const visibleClients = useMemo(
+    () => filterAndSortClients(clients, query),
+    [clients, query]
+  );
+
+  // --------- Create ----------
+  async function createClient() {
+    const check = validateClientInput(name);
+    if (!check.ok) return;
+
+    // 1) Client anlegen – addClient: Positionsparameter, Rückgabe: void
+    await s.addClient(
+      check.value.name,
+      newGender,
+      newAge === "" ? null : Number(newAge)
+    );
+
+    // 2) Anamnese anhängen – falls updateClient existiert
+    if (s.updateClient) {
+      const after = await s.listClients();
+      const created = after[after.length - 1]; // heuristisch: letzter ist neu
+      if (created) {
+        await s.updateClient({ id: created.id, anamnesis });
+        gotoClient(created.id); // direkt Klientenkartei öffnen
+      }
+    }
+
+    // 3) Vokabeln lernen
+    const therapyLabels = (anamnesis?.previous_therapies ?? [])
+      .map((t) => t.type)
+      .filter((x): x is string => !!x && x.trim().length > 0);
+    if (therapyLabels.length) learn("therapy", therapyLabels);
+    if (anamnesis?.initial_problem_category)
+      learn("problem", [anamnesis.initial_problem_category]);
+    if (anamnesis?.planned_method_text)
+      learn("method", [anamnesis.planned_method_text]);
+
+    // 4) Reset + Refresh
+    setName("");
+    setNewGender("w");
+    setNewAge("");
+    setAnamnesis({});
+    await refresh();
+  }
+
+  // ausgewählter Klient
+  const selected = useMemo(
+    () =>
+      selectedId != null
+        ? clients.find((c) => c.id === selectedId) ?? null
+        : null,
+    [selectedId, clients]
+  );
+
+  // in den Edit-Draft übernehmen, wenn Edit startet
+  function startEdit() {
+    if (!selected) return;
+    setDraft({
+      name: selected.name ?? "",
+      gender: selected.gender ?? null,
+      age: selected.age ?? null,
+      anamnesis: selected.anamnesis ?? {},
+    });
+    setEditMode(true);
+  }
+  function cancelEdit() {
+    setEditMode(false);
+  }
+  async function saveEdit() {
+    if (!s.updateClient || !selected) return;
+    await s.updateClient({
+      id: selected.id,
+      name: draft.name,
+      gender: draft.gender ?? null,
+      age: draft.age ?? null,
+      anamnesis: draft.anamnesis ?? null,
+    });
+    setEditMode(false);
+    await refresh();
+  }
+
+  async function deleteSelected() {
+    if (!s.deleteClient || selectedId == null) return;
+    if (!confirm("Klienten wirklich löschen?")) return;
+    await s.deleteClient(selectedId);
+    setSelectedId(null);
+    await refresh();
+  }
+
+  const nameCheck = validateClientInput(name);
+
   return (
-    <>
-      {/* KLlient anlegen */}
-      <section className="card formGrid" aria-labelledby="new-client" style={{ marginBottom: 16 }}>
-        <h2 id="new-client">Klient anlegen</h2>
+    <section className="card" style={{ display: "grid", gap: 12 }}>
+      <h1 style={{ marginTop: 0 }}>Klienten</h1>
 
-       <form onSubmit={handleCreateSubmit} className="formGrid">
-    <label className="field">
-      <span>Name</span>
-      <input
-        className={nameInputClass}
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={onCreateKeyDown}     
-        placeholder="Klientenname"
-        autoComplete="name"
-        enterKeyHint="go"
-      />
-    </label>
+      {/* --------- Klient anlegen --------- */}
+      <div className="cardSection">
+        {/* <--- NEU: Rahmen + Padding */}
+        <div className="formGrid" style={{ background: "#f9fff9" }}>
+          <h2 style={{ marginTop: 0 }}>Klient anlegen</h2>
 
-    <div className="actions" style={{ gap: 12 }}>
-      <span>Geschlecht:</span>
-      <label>
-        <input type="radio" name="gnew" checked={newGender==='w'} onChange={()=>setNewGender('w')} /> weiblich
-      </label>
-      <label>
-        <input type="radio" name="gnew" checked={newGender==='m'} onChange={()=>setNewGender('m')} /> männlich
-      </label>
-      <label>
-        <input type="radio" name="gnew" checked={newGender==='d'} onChange={()=>setNewGender('d')} /> divers
-      </label>
+          <label style={{ display: "block", marginBottom: 8 }}>
+            Name
+            <input
+              className="input"
+              placeholder="Klientenname"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              style={
+                !nameCheck.ok && name.trim()
+                  ? { borderColor: "#d33" }
+                  : undefined
+              }
+            />
+          </label>
 
-      <label style={{ marginLeft: 12 }}>
-        Alter:{' '}
-        <input
-          className="input"
-          style={{ width: 100 }}
-          type="number"
-          min={0}
-          max={120}
-          value={newAge}
-          onChange={(e) => setNewAge(e.target.value === '' ? '' : Number(e.target.value))}
-        />
-      </label>
-    </div>
+          <div className="formGrid" style={{ marginTop: 8 }}>
+            <div className="field">
+              <span>Geschlecht</span>
+              <div className="row">
+                <label>
+                  <input
+                    type="radio"
+                    name="gender"
+                    checked={newGender === "w"}
+                    onChange={() => setNewGender("w")}
+                  />{" "}
+                  weiblich
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="gender"
+                    checked={newGender === "m"}
+                    onChange={() => setNewGender("m")}
+                  />{" "}
+                  männlich
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="gender"
+                    checked={newGender === "d"}
+                    onChange={() => setNewGender("d")}
+                  />{" "}
+                  divers
+                </label>
+              </div>
+            </div>
 
-    <div className="actions">
-      <button
-        className="btn btnPrimary"
-        type="submit"                    
-        disabled={!addCheck.ok}
-      >
-        Anlegen
-      </button>
-    </div>
-  </form>
-      </section>
-
-      {/* Klient suchen */}
-      <section className="card" aria-labelledby="search-clients">
-        <h2 id="search-clients">Klient suchen</h2>
-
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(180px, 420px) 1fr',
-            gap: 12,
-            alignItems: 'start',
-          }}
-        >
-          <div>
-            <label className="field">
-              <span>Name</span>
+            <label>
+              Alter
               <input
-                className="input narrowMd"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Name"
+                className="input"
+                type="number"
+                min={0}
+                placeholder="z. B. 35"
+                value={newAge}
+                onChange={(e) =>
+                  setNewAge(e.target.value === "" ? "" : Number(e.target.value))
+                }
               />
             </label>
-            <div role="status" aria-live="polite" className="hint" style={{ marginTop: 6 }}>
-              {filtered.length} Klient{filtered.length === 1 ? '' : 'en'}
-            </div>
           </div>
 
-          <div className="card" aria-label="Vorschläge" style={{ minHeight: 42 }}>
-            {suggestionList.length === 0 ? (
-              <span className="hint">Keine Vorschläge</span>
-            ) : (
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
-                {suggestionList.map((n) => (
-                  <li key={n}>
-                    <button className="btn" onClick={() => setQuery(n)}>
-                      {n}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+          {/* ---- ANAMNESE ---- */}
+          <AnamnesisForm value={anamnesis} onChange={setAnamnesis} />
+
+          <div className="actions" style={{ marginTop: 10 }}>
+            <button
+              className="btn btnPrimary"
+              onClick={createClient}
+              disabled={!nameCheck.ok}
+            >
+              Anlegen
+            </button>
+          </div>
+
+          {!s.updateClient && (
+            <div className="hint" style={{ marginTop: 6 }}>
+              Hinweis: Dein Storage hat keine <code>updateClient</code>
+              -Funktion. Die Anamnese wird beim Anlegen gesetzt; spätere
+              Bearbeitung ist aktuell nicht möglich.
+            </div>
+          )}
+        </div>
+      </div>
+      {/* --------- Klient suchen --------- */}
+      <div className="card">
+        <h2 style={{ marginTop: 0 }}>Klient suchen</h2>
+        <div className="row" style={{ gap: 12, alignItems: "center" }}>
+          <label style={{ flex: 1 }}>
+            Name
+            <input
+              className="input"
+              placeholder="Name"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </label>
+          <div className="hint">Keine Vorschläge</div>
+        </div>
+        <div style={{ marginTop: 8 }} className="hint">
+          {visibleClients.length} Klient
+          {visibleClients.length === 1 ? "" : "en"}
+        </div>
+
+        {/* Trefferliste */}
+        {visibleClients.length === 0 ? (
+          <div className="hint">Keine Treffer.</div>
+        ) : (
+          <ul
+            style={{
+              listStyle: "none",
+              padding: 0,
+              margin: 0,
+              display: "grid",
+              gap: 8,
+            }}
+          >
+            {visibleClients.map((c) => (
+              <li
+                key={c.id}
+                id={`client-${c.id}`}
+                className="row"
+                style={{
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <button
+                  className="btn"
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    color: "var(--primary)",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => {
+                    setSelectedId(c.id);
+                    gotoClient(c.id);
+                  }}
+                >
+                  <strong>#{c.id}</strong> {c.name}{" "}
+                  <span className="hint">
+                    {c.gender ?? "–"}
+                    {c.age != null ? ` · ${c.age} J.` : ""}
+                  </span>
+                </button>
+                <div className="row" style={{ gap: 8 }}>
+                  {/* Deep-Link: Sitzungen dieses Klienten */}
+                  <a className="btn" href={`#sessions?client=${c.id}`}>
+                    Zu den Sitzungen
+                  </a>
+                  <a className="btn" href={`#clients?id=${c.id}`}>
+                    Zur Klientenkartei
+                  </a>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* --------- Klientenkartei / Details --------- */}
+      {selected && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>
+            Klient #{selected.id} – Klientenkartei
+          </h3>
+
+          {/* Stammdaten */}
+          <div
+            className="row"
+            style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}
+          >
+            <input
+              className="input"
+              style={{ minWidth: 220 }}
+              value={editMode ? draft.name ?? "" : selected.name ?? ""}
+              onChange={(e) =>
+                editMode && setDraft((d) => ({ ...d, name: e.target.value }))
+              }
+              disabled={!editMode}
+              placeholder="-"
+            />
+            <select
+              className="input"
+              value={editMode ? draft.gender ?? "" : selected.gender ?? ""}
+              onChange={(e) =>
+                editMode &&
+                setDraft((d) => ({
+                  ...d,
+                  gender: (e.target.value || null) as Gender | null,
+                }))
+              }
+              disabled={!editMode}
+            >
+              <option value="">-</option>
+              <option value="w">weiblich</option>
+              <option value="m">männlich</option>
+              <option value="d">divers</option>
+            </select>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              style={{ width: 120 }}
+              value={editMode ? draft.age ?? "" : selected.age ?? ""}
+              onChange={(e) =>
+                editMode &&
+                setDraft((d) => ({
+                  ...d,
+                  age: e.target.value === "" ? null : Number(e.target.value),
+                }))
+              }
+              disabled={!editMode}
+              placeholder="-"
+            />
+            <a className="btn" href={`#sessions?client=${selected.id}`}>
+              Zu den Sitzungen
+            </a>
+            {s.deleteClient && (
+              <button className="btn" onClick={deleteSelected}>
+                Löschen
+              </button>
+            )}
+            {s.updateClient && !editMode && (
+              <button className="btn btnPrimary" onClick={startEdit}>
+                Bearbeiten
+              </button>
+            )}
+            {s.updateClient && editMode && (
+              <>
+                <button className="btn btnPrimary" onClick={saveEdit}>
+                  Speichern
+                </button>
+                <button className="btn" onClick={cancelEdit}>
+                  Abbrechen
+                </button>
+              </>
             )}
           </div>
-        </div>
-      </section>
 
-      {/* Liste */}
-      <ul className="list" aria-label="Klientenliste">
-        {filtered.map((c, idx) => {
-          const isEditing = c.id === editingId
-          return (
-            <li id={`client-${c.id}`} key={c.id} className="item" ref={idx === 0 ? firstCardRef : undefined}>
-              <div className="row">
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <strong>#{c.id}</strong>{' '}
-                  {!isEditing ? (
-                    <>{c.name}</>
-                  ) : (
-                    <div className="editFields">
-                      <label className="field">
-                        <span>Name</span>
-                        <input
-                          className={saveCheck.errors.name ? 'input inputInvalid' : 'input'}
-                          value={draftName}
-                          onChange={(e) => setDraftName(e.target.value)}
-                          onKeyDown={onEditKeyDown}
-                        />
-                      </label>
+          {/* Anamnese – Zusammenfassung oder Editor */}
+          {!editMode ? (
+            <div className="card" style={{ marginTop: 12 }}>
+              <h4 style={{ margin: 0 }}>Anamnese</h4>
 
-                      <div className="actions" style={{ gap: 12 }}>
-                        <span>Geschlecht:</span>
-                        <label>
-                          <input
-                            type="radio"
-                            name={`gedit-${c.id}`}
-                            defaultChecked={(draftGender ?? c.gender) === 'w'}
-                            onChange={() => setDraftGender('w')}
-                          /> w
-                        </label>
-                        <label>
-                          <input
-                            type="radio"
-                            name={`gedit-${c.id}`}
-                            defaultChecked={(draftGender ?? c.gender) === 'm'}
-                            onChange={() => setDraftGender('m')}
-                          /> m
-                        </label>
-                        <label>
-                          <input
-                            type="radio"
-                            name={`gedit-${c.id}`}
-                            defaultChecked={(draftGender ?? c.gender) === 'd'}
-                            onChange={() => setDraftGender('d')}
-                          /> d
-                        </label>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 2fr",
+                  gap: 8,
+                  marginTop: 8,
+                }}
+              >
+                <div className="hint">Anliegen (Kategorie)</div>
+                <div>{selected.anamnesis?.initial_problem_category || "-"}</div>
 
-                        <label style={{ marginLeft: 12 }}>
-                          Alter:{' '}
-                          <input
-                            className="input"
-                            style={{ width: 100 }}
-                            type="number"
-                            min={0}
-                            max={120}
-                            defaultValue={draftAge ?? (c.age ?? '')}
-                            onChange={(e) =>
-                              setDraftAge(e.target.value === '' ? null : Number(e.target.value))
-                            }
-                          />
-                        </label>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <div className="hint">Beschreibung</div>
+                <div>{selected.anamnesis?.initial_problem_text || "-"}</div>
 
-                <div className="actions">
-                  {!isEditing ? (
-                    <>
-                      <button className="btn btnPrimary" onClick={() => goToNewSessionForClient(c.id)}>
-                        Neue Sitzung
-                      </button>
-                      <button className="btn" onClick={() => goToSessionsForClient(c.id)}>
-                        Zu den Sitzungen
-                      </button>
-                      <button className="btn" onClick={() => startEdit(c)}>Bearbeiten</button>
-                      <button className="btn" onClick={() => remove(c.id)}>Löschen</button>
-                    </>
-                  ) : (
-                    <>
-                      <button className="btn" onClick={() => void saveEdit()} disabled={!saveCheck.ok}>Speichern</button>
-                      <button className="btn btnSecondary" onClick={cancelEdit}>Abbrechen</button>
-                    </>
-                  )}
-                </div>
+                <div className="hint">Geplante Methode</div>
+                <div>{selected.anamnesis?.planned_method_text || "-"}</div>
               </div>
 
-              {/* ▼ Anliegen & Sitzungen */}
-              {!isEditing && (
-                <div style={{ marginTop: 10 }}>
-                  <ClientCases clientId={c.id} />
+              <div style={{ marginTop: 8 }}>
+                <div className="hint" style={{ marginBottom: 4 }}>
+                  Bisherige Therapien
                 </div>
-              )}
-            </li>
-          )
-        })}
-      </ul>
-    </>
-  )
+                {selected.anamnesis?.previous_therapies?.length ? (
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {selected.anamnesis.previous_therapies.map((t, i) => (
+                      <li key={i}>
+                        {t.type || "-"}
+                        {t.duration_months != null
+                          ? ` · ${t.duration_months} Mon.`
+                          : ""}
+                        {t.completed != null
+                          ? ` · ${
+                              t.completed
+                                ? "abgeschlossen"
+                                : "nicht abgeschlossen"
+                            }`
+                          : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div>-</div>
+                )}
+              </div>
+
+              <div style={{ marginTop: 8 }}>
+                <div className="hint" style={{ marginBottom: 4 }}>
+                  Medikamente
+                </div>
+                {selected.anamnesis?.medications?.length ? (
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {selected.anamnesis.medications.map((m, i) => (
+                      <li key={i}>
+                        {m.name || "-"}
+                        {m.dosage ? ` · ${m.dosage}` : ""}
+                        {m.frequency ? ` · ${m.frequency}` : ""}
+                        {m.current != null
+                          ? ` · ${m.current ? "aktuell" : "nicht aktuell"}`
+                          : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div>-</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="card" style={{ marginTop: 12 }}>
+              <h4 style={{ margin: 0 }}>Anamnese bearbeiten</h4>
+              <AnamnesisForm
+                value={draft.anamnesis ?? {}}
+                onChange={(next) =>
+                  setDraft((d) => ({ ...d, anamnesis: next }))
+                }
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }

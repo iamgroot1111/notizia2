@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Method, Gender, Client, Case, Session } from "../shared/domain";
+import type { Client, Case, Session, Method, Gender } from "../shared/domain";
 import { storage } from "../shared/storage";
+import type { Row as RowX } from "../shared/analytics";
 
-/* ---------- Labels ---------- */
+/* -------------------- Labels & Optionen -------------------- */
+
 const METHOD_LABELS: Record<Method, string> = {
   aufloesende_hypnose: "Auflösende Hypnose",
   klassische_hypnose: "Klassische Hypnose",
@@ -16,468 +18,372 @@ const METHODS: Method[] = [
   "other",
 ];
 
-const PROBLEM_LABELS: Record<Case["problem_category"], string> = {
-  overweight: "Übergewicht",
-  social_anxiety: "Soziale Angst",
-  panic: "Panik",
-  depression: "Depression",
-  sleep: "Schlafproblem",
-  pain: "Schmerzen",
-  self_worth: "Selbstwert",
-  relationship: "Beziehungen",
-  other: "Sonstige",
+const PROBLEM_OPTIONS: { value: string; label: string }[] = [
+  { value: "overweight", label: "Übergewicht" },
+  { value: "social_anxiety", label: "Soziale Angst" },
+  { value: "panic", label: "Panik" },
+  { value: "depression", label: "Depression" },
+  { value: "sleep", label: "Schlafproblem" },
+  { value: "pain", label: "Schmerzen" },
+  { value: "self_worth", label: "Selbstwert" },
+  { value: "relationship", label: "Beziehungen" },
+  { value: "other", label: "Sonstige" },
+];
+const PROBLEM_LABELS: Record<string, string> = Object.fromEntries(
+  PROBLEM_OPTIONS.map((p) => [p.value, p.label])
+) as Record<string, string>;
+
+/* -------------------- Storage‑API (optional parts) -------------------- */
+
+type SessionsStorageAPI = {
+  listAllSessionsExpanded: () => Promise<RowX[]>;
+  listClients: () => Promise<Client[]>;
+  // optional:
+  updateSession?: (
+    patch: { id: number } & Partial<Session>
+  ) => Promise<Session | void>;
+  deleteSession?: (id: number) => Promise<void>;
+  addSession?: (payload: {
+    case_id: number;
+    started_at: string;
+    method: Method;
+    duration_min?: number | null;
+    sud_before?: number | null;
+    sud_after?: number | null;
+  }) => Promise<Session | void>;
+  listCasesByClient?: (clientId: number) => Promise<Case[]>;
 };
+const s = storage as unknown as SessionsStorageAPI;
 
-/* ---------- Datentyp für Listenzeilen ---------- */
-type Row = {
-  session: Session;
-  case: Case;
-  client: Client;
-};
+/* -------------------- Hash‑Helpers -------------------- */
+function getHashParams() {
+  const h = window.location.hash;
+  const i = h.indexOf("?");
+  const qs = new URLSearchParams(i >= 0 ? h.slice(i + 1) : "");
+  return qs;
+}
 
-type Props = {
-  onGoToClient?: (clientId: number) => void;
-};
+/* -------------------- Main Page -------------------- */
 
-/* =======================================================================
-   Hauptseite
-   ======================================================================= */
-export default function SessionsPage({ onGoToClient }: Props) {
-  const [rows, setRows] = useState<Row[]>([]);
+export default function SessionsPage({
+  onGoToClient,
+}: { onGoToClient?: (id: number) => void } = {}) {
+  const [rows, setRows] = useState<RowX[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
 
-  // Filter
-  const [q, setQ] = useState(""); // Volltext
-  const [m, setM] = useState<Method | "">(""); // Methode
-  const [genders, setGenders] = useState<Set<Gender>>(new Set()); // w/m/d
-  const [ageMin, setAgeMin] = useState<number | "">(""); // Alter von
-  const [ageMax, setAgeMax] = useState<number | "">(""); // Alter bis
+  // Filter UI
+  const [query, setQuery] = useState("");
+  const [method, setMethod] = useState<Method | "">("");
+  const [gW, setGW] = useState(false);
+  const [gM, setGM] = useState(false);
+  const [gD, setGD] = useState(false);
+  const [ageMin, setAgeMin] = useState<string>("");
+  const [ageMax, setAgeMax] = useState<string>("");
 
-  // Edit
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editPatch, setEditPatch] = useState<Partial<Session>>({});
+  // Deep‑Link Client‑Filter + Intent „Neuen Dialog öffnen“
+  const [clientFilterId, setClientFilterId] = useState<number | null>(null);
+  const [openNewForClientId, setOpenNewForClientId] = useState<number | null>(null);
 
-  // „Neue Sitzung“-Dialog
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createPrefillClientId, setCreatePrefillClientId] = useState<
-    number | null
-  >(null);
+  // Dialoge
+  const [editRow, setEditRow] = useState<RowX | null>(null);
+  const [newOpen, setNewOpen] = useState(false);
 
-  // Laden
+  useEffect(() => {
+    s.listAllSessionsExpanded().then(setRows);
+    s.listClients().then(setClients);
+  }, []);
+
+  useEffect(() => {
+    const apply = () => {
+      const p = getHashParams();
+      const cid = p.get("client");
+      const wantNew = p.get("new") === "1";
+      setClientFilterId(cid ? Number(cid) : null);
+      setOpenNewForClientId(wantNew && cid ? Number(cid) : null);
+    };
+    apply();
+    window.addEventListener("hashchange", apply);
+    return () => window.removeEventListener("hashchange", apply);
+  }, []);
+
+  useEffect(() => {
+    if (openNewForClientId != null) setNewOpen(true);
+  }, [openNewForClientId]);
+
   async function refresh() {
-    const list = await storage.listAllSessionsExpanded();
+    const list = await s.listAllSessionsExpanded();
     setRows(list);
   }
-  useEffect(() => {
-    void refresh();
-  }, []);
 
-  // Cross-Page Intent (von ClientsPage: openCreateSession + sessionsClientId)
-  useEffect(() => {
-    const openNew = sessionStorage.getItem("openCreateSession") === "1";
-    const cidStr = sessionStorage.getItem("sessionsClientId");
-    if (openNew) {
-      const cid = cidStr ? Number(cidStr) : NaN;
-      setCreatePrefillClientId(Number.isFinite(cid) ? cid : null);
-      setCreateOpen(true);
+  // Ableitung: Fälle je Klient (Fallback)
+  function casesFromRowsByClient(id: number): Case[] {
+    const map = new Map<number, Case>();
+    for (const r of rows) if (r.client.id === id) map.set(r.case.id, r.case);
+    return [...map.values()];
+  }
+
+  // Filter anwenden
+  const rowsForView = useMemo(() => {
+    let out = rows.slice();
+
+    if (clientFilterId) out = out.filter((r) => r.client.id === clientFilterId);
+
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      out = out.filter((r) => {
+        const name = (r.client.name ?? "").toLowerCase();
+        const prob = (
+          PROBLEM_LABELS[r.case.problem_category] ??
+          r.case.problem_category ??
+          ""
+        ).toLowerCase();
+        const meth = (
+          METHOD_LABELS[r.session.method] ?? r.session.method
+        ).toLowerCase();
+        return name.includes(q) || prob.includes(q) || meth.includes(q);
+      });
     }
-    // Flags aufräumen, damit sie nicht „hängen bleiben“
-    sessionStorage.removeItem("openCreateSession");
-  }, []);
 
-  /* ---------- Filterlogik ---------- */
-  const filtered = useMemo(() => {
-    const query = q.trim().toLowerCase();
-    return rows.filter((r) => {
-      const matchQ = query
-        ? r.client.name.toLowerCase().includes(query) ||
-          r.case.problem_text.toLowerCase().includes(query) ||
-          METHOD_LABELS[r.session.method].toLowerCase().includes(query)
-        : true;
+    if (method) out = out.filter((r) => r.session.method === method);
 
-      const matchM = m ? r.session.method === m : true;
+    const gSelected = new Set<Gender>([
+      ...(gW ? (["w"] as const) : []),
+      ...(gM ? (["m"] as const) : []),
+      ...(gD ? (["d"] as const) : []),
+    ]);
+    if (gSelected.size > 0)
+      out = out.filter((r) => r.client.gender && gSelected.has(r.client.gender));
 
-      const matchG = genders.size
-        ? r.client.gender
-          ? genders.has(r.client.gender)
-          : false
-        : true;
+    if (ageMin !== "")
+      out = out.filter(
+        (r) =>
+          typeof r.client.age === "number" &&
+          (r.client.age as number) >= Number(ageMin)
+      );
+    if (ageMax !== "")
+      out = out.filter(
+        (r) =>
+          typeof r.client.age === "number" &&
+          (r.client.age as number) <= Number(ageMax)
+      );
 
-      const a = r.client.age ?? null;
-      const matchAgeMin =
-        ageMin === "" ? true : a !== null && a >= Number(ageMin);
-      const matchAgeMax =
-        ageMax === "" ? true : a !== null && a <= Number(ageMax);
-      const matchAge = matchAgeMin && matchAgeMax;
-
-      return matchQ && matchM && matchG && matchAge;
-    });
-  }, [rows, q, m, genders, ageMin, ageMax]);
-
-  // Wenn genau 1 Klient in der Ergebnisliste vorkommt → für „Neue Sitzung“ nutzen
-  const candidateClientId = useMemo<number | null>(() => {
-    const ids = Array.from(new Set(filtered.map((r) => r.client.id)));
-    return ids.length === 1 ? ids[0] : null;
-  }, [filtered]);
-
-  function toggleGender(g: Gender) {
-    setGenders((prev) => {
-      const next = new Set(prev);
-      if (next.has(g)) next.delete(g);
-      else next.add(g);
-      return next;
-    });
-  }
-
-  /* ---------- Editieren / Löschen ---------- */
-  function startEdit(s: Session) {
-    setEditingId(s.id);
-    setEditPatch({
-      method: s.method,
-      duration_min: s.duration_min,
-      sud_before: s.sud_before,
-      sud_after: s.sud_after,
-    });
-  }
-  function cancelEdit() {
-    setEditingId(null);
-    setEditPatch({});
-  }
-  async function saveEdit(id: number) {
-    await storage.updateSession(id, editPatch);
-    cancelEdit();
-    await refresh();
-  }
-  async function removeSession(id: number) {
-    if (!window.confirm("Sitzung wirklich löschen?")) return;
-    await storage.deleteSession(id);
-    await refresh();
-  }
-
-  /* ---------- Neue Sitzung öffnen ---------- */
-  function openCreate() {
-    // Kontext neutralisieren
-    sessionStorage.removeItem("sessionsCaseId");
-    sessionStorage.removeItem("openSessionId");
-
-    if (candidateClientId != null) {
-      sessionStorage.setItem("sessionsClientId", String(candidateClientId));
-      setCreatePrefillClientId(candidateClientId);
-    } else {
-      sessionStorage.removeItem("sessionsClientId");
-      setCreatePrefillClientId(null);
-    }
-    setCreateOpen(true);
-  }
+    out.sort(
+      (a, b) =>
+        new Date(b.session.started_at).getTime() -
+        new Date(a.session.started_at).getTime()
+    );
+    return out;
+  }, [rows, query, method, gW, gM, gD, ageMin, ageMax, clientFilterId]);
 
   return (
-    <section className="card">
-      <h2 style={{ marginTop: 0 }}>Sitzungen</h2>
+    <section className="card" style={{ display: "grid", gap: 12 }}>
+      <h1 style={{ marginTop: 0 }}>Sitzungen</h1>
 
-      {/* Filterzeile 1: Volltext + Methode + CTA */}
-      <div
-        className="row"
-        style={{ alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}
-      >
-        <label style={{ flex: 1, minWidth: 220, display: "grid", gap: 4 }}>
-          Suche
-          <input
-            className="input"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Name, Anliegen oder Methode"
-          />
-        </label>
-
-        <label style={{ minWidth: 200, display: "grid", gap: 4 }}>
-          Methode
-          <select
-            className="input"
-            value={m}
-            onChange={(e) => setM(e.target.value as Method | "")}
-          >
-            <option value="">alle</option>
-            {METHODS.map((k) => (
-              <option key={k} value={k}>
-                {METHOD_LABELS[k]}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        {/* CTA rechts; gleiche Optik wie andere Buttons */}
-        <div className="actions">
-          <button className="btn btnPrimary" onClick={openCreate}>
-            Neue Sitzung
-          </button>
-        </div>
-      </div>
-
-      {/* Filterzeile 2: Geschlecht + Alter */}
-      <div
-        className="row"
-        style={{
-          alignItems: "center",
-          gap: 12,
-          flexWrap: "wrap",
-          marginTop: 8,
-        }}
-      >
-        <div className="actions" style={{ gap: 12 }}>
-          <span>Geschlecht:</span>
+      {/* Filter */}
+      <div className="card">
+        <div className="formGrid">
           <label>
+            Suche
             <input
-              type="checkbox"
-              checked={genders.has("w")}
-              onChange={() => toggleGender("w")}
-            />{" "}
-            w
+              className="input"
+              placeholder="Name, Anliegen oder Methode"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
           </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={genders.has("m")}
-              onChange={() => toggleGender("m")}
-            />{" "}
-            m
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={genders.has("d")}
-              onChange={() => toggleGender("d")}
-            />{" "}
-            d
-          </label>
-        </div>
 
-        <div className="actions" style={{ gap: 8 }}>
+          <label>
+            Methode
+            <select
+              className="input"
+              value={method}
+              onChange={(e) => setMethod(e.target.value as Method | "")}
+            >
+              <option value="">alle</option>
+              {METHODS.map((m) => (
+                <option key={m} value={m}>
+                  {METHOD_LABELS[m]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {/* Geschlecht – jetzt mit .field, damit die Checkboxen in einer Zeile sind */}
+          <div className="field">
+            <span>Geschlecht:</span>
+            <div className="row">
+              <label><input type="checkbox" checked={gW} onChange={(e)=>setGW(e.target.checked)} /> w</label>
+              <label><input type="checkbox" checked={gM} onChange={(e)=>setGM(e.target.checked)} /> m</label>
+              <label><input type="checkbox" checked={gD} onChange={(e)=>setGD(e.target.checked)} /> d</label>
+            </div>
+          </div>
+
           <label>
             Alter ab
             <input
               className="input"
-              style={{ width: 90, marginLeft: 6 }}
               type="number"
               min={0}
-              max={120}
               value={ageMin}
-              onChange={(e) =>
-                setAgeMin(e.target.value === "" ? "" : Number(e.target.value))
-              }
+              onChange={(e) => setAgeMin(e.target.value)}
             />
           </label>
+
           <label>
             bis
             <input
               className="input"
-              style={{ width: 90, marginLeft: 6 }}
               type="number"
               min={0}
-              max={120}
               value={ageMax}
-              onChange={(e) =>
-                setAgeMax(e.target.value === "" ? "" : Number(e.target.value))
-              }
+              onChange={(e) => setAgeMax(e.target.value)}
             />
           </label>
+
+          <div className="actions">
+            <button className="btn btnPrimary" onClick={() => setNewOpen(true)}>
+              Neue Sitzung
+            </button>
+          </div>
         </div>
+
+        {/* Hinweis bei Deep‑Link‑Filter ohne Sitzungen */}
+        {clientFilterId && rowsForView.length === 0 && (
+          <div className="card" style={{ marginTop: 8 }}>
+            <div className="hint" style={{ marginBottom: 8 }}>
+              Noch keine Sitzung.
+            </div>
+            <button className="btn btnPrimary" onClick={() => setNewOpen(true)}>
+              Neue Sitzung für diesen Klienten
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Ergebnis-Info */}
-      <div
-        role="status"
-        aria-live="polite"
-        className="hint"
-        style={{ marginTop: 8 }}
-      >
-        {filtered.length} Sitzung{filtered.length === 1 ? "" : "en"}
-      </div>
+      {/* Liste */}
+      <div className="card">
+        <div className="hint" style={{ marginBottom: 6 }}>
+          {rowsForView.length} Sitzung{rowsForView.length === 1 ? "" : "en"}
+        </div>
 
-      {/* Ergebnisliste */}
-      <ul
-        style={{
-          listStyle: "none",
-          padding: 0,
-          display: "grid",
-          gap: 8,
-          marginTop: 8,
-        }}
-      >
-        {filtered.map((r) => {
-          const isEdit = editingId === r.session.id;
-          return (
-            <li
-              key={r.session.id}
-              className="cardSection"
-              style={{ padding: 10 }}
-            >
-              {!isEdit ? (
+        {rowsForView.length === 0 ? (
+          <div className="hint">Keine Daten.</div>
+        ) : (
+          <ul
+            style={{
+              listStyle: "none",
+              padding: 0,
+              margin: 0,
+              display: "grid",
+              gap: 8,
+            }}
+          >
+            {rowsForView.map((r) => (
+              <li
+                key={r.session.id}
+                className="card"
+                style={{ background: "#f3faf5" }}
+              >
                 <div
                   className="row"
-                  style={{ alignItems: "baseline", flexWrap: "wrap", gap: 12 }}
+                  style={{
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 8,
+                  }}
                 >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div>
-                      <strong>
-                        {new Date(r.session.started_at).toLocaleString()}
-                      </strong>
-                      {" · "}
-                      {METHOD_LABELS[r.session.method]}
-                    </div>
-                    <div className="hint">
-                      {r.client.name}
-                      {" — "}
-                      {r.case.problem_text}
-                      {" (SUD: "}
-                      {r.session.sud_before ?? "–"}
-                      {" → "}
-                      {r.session.sud_after ?? "–"}
-                      {")"}
-                      {typeof r.client.age === "number"
-                        ? ` · Alter: ${r.client.age}`
-                        : ""}
-                      {r.client.gender
-                        ? ` · Geschlecht: ${r.client.gender}`
-                        : ""}
-                    </div>
+                  <div>
+                    <strong>{formatDateTime(r.session.started_at)}</strong> ·{" "}
+                    {PROBLEM_LABELS[r.case.problem_category] ??
+                      r.case.problem_category}
                   </div>
-
-                  <div className="actions">
+                  <div className="row" style={{ gap: 8 }}>
                     <button
                       className="btn"
-                      onClick={() => startEdit(r.session)}
+                      onClick={() => setEditRow(r)}
+                      disabled={!s.updateSession}
                     >
                       Bearbeiten
                     </button>
                     <button
                       className="btn"
-                      onClick={() => removeSession(r.session.id)}
+                      onClick={async () => {
+                        if (!s.deleteSession) return;
+                        if (!confirm("Sitzung wirklich löschen?")) return;
+                        await s.deleteSession(r.session.id);
+                        await refresh();
+                      }}
+                      disabled={!s.deleteSession}
                     >
                       Löschen
                     </button>
-                    <button
-                      className="btn"
-                      onClick={() => onGoToClient?.(r.client.id)}
-                    >
-                      Zum Klienten
-                    </button>
+                    {onGoToClient ? (
+                      <button
+                        className="btn"
+                        onClick={() => onGoToClient(r.client.id)}
+                      >
+                        Zur Klientenkartei
+                      </button>
+                    ) : (
+                      <a className="btn" href={`#clients?id=${r.client.id}`}>
+                        Zur Klientenkartei
+                      </a>
+                    )}
                   </div>
                 </div>
-              ) : (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void saveEdit(r.session.id);
-                  }}
-                  className="row"
-                  style={{ alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}
-                >
-                  <label style={{ minWidth: 200, display: "grid", gap: 4 }}>
-                    Methode
-                    <select
-                      className="input"
-                      value={editPatch.method ?? r.session.method}
-                      onChange={(e) =>
-                        setEditPatch((p) => ({
-                          ...p,
-                          method: e.target.value as Method,
-                        }))
-                      }
-                    >
-                      {METHODS.map((k) => (
-                        <option key={k} value={k}>
-                          {METHOD_LABELS[k]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label style={{ width: 120, display: "grid", gap: 4 }}>
-                    Dauer (min)
-                    <input
-                      className="input"
-                      type="number"
-                      min={0}
-                      value={
-                        editPatch.duration_min ?? r.session.duration_min ?? ""
-                      }
-                      onChange={(e) =>
-                        setEditPatch((p) => ({
-                          ...p,
-                          duration_min:
-                            e.target.value === ""
-                              ? null
-                              : Number(e.target.value),
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <label style={{ width: 120, display: "grid", gap: 4 }}>
-                    SUD vor
-                    <input
-                      className="input"
-                      type="number"
-                      min={0}
-                      max={10}
-                      value={editPatch.sud_before ?? r.session.sud_before ?? ""}
-                      onChange={(e) =>
-                        setEditPatch((p) => ({
-                          ...p,
-                          sud_before:
-                            e.target.value === ""
-                              ? null
-                              : Number(e.target.value),
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <label style={{ width: 120, display: "grid", gap: 4 }}>
-                    SUD nach
-                    <input
-                      className="input"
-                      type="number"
-                      min={0}
-                      max={10}
-                      value={editPatch.sud_after ?? r.session.sud_after ?? ""}
-                      onChange={(e) =>
-                        setEditPatch((p) => ({
-                          ...p,
-                          sud_after:
-                            e.target.value === ""
-                              ? null
-                              : Number(e.target.value),
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <div className="actions">
-                    <button className="btn btnPrimary" type="submit">
-                      Speichern
-                    </button>
-                    <button className="btn" type="button" onClick={cancelEdit}>
-                      Abbrechen
-                    </button>
-                  </div>
-                </form>
-              )}
-            </li>
-          );
-        })}
-        {filtered.length === 0 && (
-          <li className="hint">Keine Sitzungen gefunden.</li>
+                <div className="hint" style={{ marginTop: 4 }}>
+                  {r.client.name} —{" "}
+                  {r.session.sud_before != null || r.session.sud_after != null
+                    ? `SUD: ${r.session.sud_before ?? "–"} → ${
+                        r.session.sud_after ?? "–"
+                      }`
+                    : `SUD: –`}{" "}
+                  · Alter: {r.client.age ?? "–"} · Geschlecht:{" "}
+                  {r.client.gender ?? "–"}
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
-      </ul>
+      </div>
 
-      {/* Dialog: Neue Sitzung */}
-      {createOpen && (
-        <NewSessionForm
-          prefillClientId={createPrefillClientId}
-          onClose={() => setCreateOpen(false)}
-          onCreated={async () => {
-            setCreateOpen(false);
-            await refresh();
+      {/* Dialog: Bearbeiten (Overlay) */}
+      {editRow && (
+        <EditSessionDialog
+          row={editRow}
+          onClose={(changed) => {
+            setEditRow(null);
+            if (changed) refresh();
+          }}
+          canSave={!!s.updateSession}
+          onSave={async (patch) => {
+            if (!s.updateSession) return false;
+            await s.updateSession({ id: editRow.session.id, ...patch });
+            return true;
+          }}
+        />
+      )}
+
+      {/* Dialog: Neue Sitzung – standardmäßig INLINE-Karte */}
+      {newOpen && (
+        <NewSessionDialog
+          inline
+          clients={clients}
+          initialClientId={clientFilterId ?? undefined}
+          loadCases={async (clientId) => {
+            if (s.listCasesByClient) return await s.listCasesByClient(clientId);
+            return casesFromRowsByClient(clientId);
+          }}
+          onClose={(changed) => {
+            setNewOpen(false);
+            if (changed) refresh();
+          }}
+          canCreate={!!s.addSession}
+          onCreate={async (payload) => {
+            if (!s.addSession) return false;
+            await s.addSession(payload);
+            return true;
           }}
         />
       )}
@@ -485,269 +391,366 @@ export default function SessionsPage({ onGoToClient }: Props) {
   );
 }
 
-/* =======================================================================
-   Dialog-Komponente: Neue Sitzung
-   ======================================================================= */
-function NewSessionForm({
-  prefillClientId,
+/* -------------------- Komponente: EditSessionDialog -------------------- */
+
+function EditSessionDialog({
+  row,
   onClose,
-  onCreated,
+  canSave,
+  onSave,
 }: {
-  prefillClientId: number | null;
-  onClose: () => void;
-  onCreated: () => void | Promise<void>;
+  row: RowX;
+  onClose: (changed: boolean) => void;
+  canSave: boolean;
+  onSave: (patch: Partial<Session>) => Promise<boolean>;
 }) {
-  const [clients, setClients] = useState<Client[]>([]);
-  const [clientId, setClientId] = useState<number | "">(prefillClientId ?? "");
-  const [cases, setCases] = useState<Case[]>([]);
-  const [caseId, setCaseId] = useState<number | "">("");
-
-  // Sitzung
-  const [method, setMethod] = useState<Method>("other");
-  const [dur, setDur] = useState<string>(""); // als string für leere Eingabe
-  const [sudBefore, setSudBefore] = useState<string>("");
-  const [sudAfter, setSudAfter] = useState<string>("");
-
-  // neues Anliegen
-  const [newCaseOpen, setNewCaseOpen] = useState(false);
-  const [newCaseCategory, setNewCaseCategory] =
-    useState<Case["problem_category"]>("other");
-  const [newCaseText, setNewCaseText] = useState("");
-
-  useEffect(() => {
-    storage.listClients().then(setClients);
-  }, []);
-
-  // Fälle des Klienten laden
-  useEffect(() => {
-    if (typeof clientId === "number") {
-      storage.listCases(clientId).then((list) => {
-        setCases(list);
-        if (list.length > 0) setCaseId(list[0].id); // neuester zuerst
-        else setCaseId("");
-      });
-    } else {
-      setCases([]);
-      setCaseId("");
-    }
-  }, [clientId]);
-
-  async function createCaseAndUse() {
-    if (typeof clientId !== "number") return;
-    await storage.addCase({
-      client_id: clientId,
-      problem_category: newCaseCategory,
-      problem_text: newCaseText.trim(), // optional
-      started_at: new Date().toISOString(),
-    });
-    const list = await storage.listCases(clientId);
-    setCases(list);
-    setCaseId(list[0]?.id ?? ""); // Index 0 = neuester Fall
-    setNewCaseOpen(false);
-    setNewCaseText("");
-  }
-
-  async function handleSave() {
-    if (typeof caseId !== "number") return;
-    await storage.addSession({
-      case_id: caseId,
-      started_at: new Date().toISOString(),
-      duration_min: dur === "" ? null : Number(dur),
-      method,
-      ease_hypnosis: null, // nicht mehr verwendet, neutral lassen
-      sud_before: sudBefore === "" ? null : Number(sudBefore),
-      sud_after: sudAfter === "" ? null : Number(sudAfter),
-      emotional_release: null,
-      insights: null,
-      notes: null,
-    });
-    await onCreated();
-  }
+  const [startedAt, setStartedAt] = useState<string>(
+    toLocalInputValue(row.session.started_at)
+  );
+  const [method, setMethod] = useState<Method>(row.session.method);
+  const [dur, setDur] = useState<string>(
+    row.session.duration_min != null ? String(row.session.duration_min) : ""
+  );
+  const [sudB, setSudB] = useState<string>(
+    row.session.sud_before != null ? String(row.session.sud_before) : ""
+  );
+  const [sudA, setSudA] = useState<string>(
+    row.session.sud_after != null ? String(row.session.sud_after) : ""
+  );
 
   return (
-    <div className="modalOverlay" onClick={onClose}>
-      <div
-        className="modal"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="new-session-title"
-      >
-        <div className="modalHeader" id="new-session-title">
-          Neue Sitzung
-        </div>
-
+    <div className="modalOverlay">
+      <div className="modal">
+        <div className="modalHeader">Sitzung bearbeiten</div>
         <div className="modalBody">
-          {/* Klient */}
-          <label className="field">
-            <span>Klient</span>
-            <select
+          <label>
+            Datum/Zeit
+            <input
               className="input"
-              value={clientId}
-              onChange={(e) =>
-                setClientId(e.target.value === "" ? "" : Number(e.target.value))
-              }
-            >
-              <option value="">– auswählen –</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+              type="datetime-local"
+              value={startedAt}
+              onChange={(e) => setStartedAt(e.target.value)}
+            />
           </label>
 
-          {/* Anliegen: existierend */}
-          <label className="field">
-            <span>Anliegen</span>
-            <select
-              className="input"
-              value={caseId}
-              onChange={(e) =>
-                setCaseId(e.target.value === "" ? "" : Number(e.target.value))
-              }
-              disabled={typeof clientId !== "number"}
-            >
-              <option value="">– auswählen –</option>
-              {cases.map((cs) => (
-                <option key={cs.id} value={cs.id}>
-                  {PROBLEM_LABELS[cs.problem_category]} ·{" "}
-                  {new Date(cs.started_at).toLocaleDateString()}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {/* Neues Anliegen anlegen (optional) */}
-          {typeof clientId === "number" && !newCaseOpen && (
-            <button
-              className="btn"
-              type="button"
-              onClick={() => setNewCaseOpen(true)}
-            >
-              Neues Anliegen anlegen
-            </button>
-          )}
-          {typeof clientId === "number" && newCaseOpen && (
-            <div className="cardSection" style={{ display: "grid", gap: 8 }}>
-              <div
-                className="row"
-                style={{ gap: 8, flexWrap: "wrap", alignItems: "end" }}
-              >
-                <label style={{ minWidth: 200, display: "grid", gap: 4 }}>
-                  Kategorie
-                  <select
-                    className="input"
-                    value={newCaseCategory}
-                    onChange={(e) =>
-                      setNewCaseCategory(
-                        e.target.value as Case["problem_category"]
-                      )
-                    }
-                  >
-                    {Object.keys(PROBLEM_LABELS).map((k) => (
-                      <option key={k} value={k}>
-                        {PROBLEM_LABELS[k as Case["problem_category"]]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label
-                  style={{ flex: 1, minWidth: 240, display: "grid", gap: 4 }}
-                >
-                  Kurzbeschreibung (optional)
-                  <input
-                    className="input"
-                    value={newCaseText}
-                    onChange={(e) => setNewCaseText(e.target.value)}
-                    placeholder="Kurzbeschreibung"
-                  />
-                </label>
-                <div className="actions">
-                  <button
-                    className="btn btnPrimary"
-                    type="button"
-                    onClick={() => void createCaseAndUse()}
-                  >
-                    Anlegen & übernehmen
-                  </button>
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => setNewCaseOpen(false)}
-                  >
-                    Abbrechen
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Sitzungsfelder */}
-          <label className="field">
-            <span>Methode</span>
+          <label>
+            Methode
             <select
               className="input"
               value={method}
               onChange={(e) => setMethod(e.target.value as Method)}
             >
-              {METHODS.map((k) => (
-                <option key={k} value={k}>
-                  {METHOD_LABELS[k]}
+              {METHODS.map((m) => (
+                <option key={m} value={m}>
+                  {METHOD_LABELS[m]}
                 </option>
               ))}
             </select>
           </label>
 
-          <label className="field">
-            <span>Dauer (min)</span>
-            <input
-              className="input"
-              type="number"
-              min={0}
-              value={dur}
-              onChange={(e) => setDur(e.target.value)}
-            />
-          </label>
-
-          <label className="field">
-            <span>SUD vor</span>
-            <input
-              className="input"
-              type="number"
-              min={0}
-              max={10}
-              value={sudBefore}
-              onChange={(e) => setSudBefore(e.target.value)}
-            />
-          </label>
-
-          <label className="field">
-            <span>SUD nach</span>
-            <input
-              className="input"
-              type="number"
-              min={0}
-              max={10}
-              value={sudAfter}
-              onChange={(e) => setSudAfter(e.target.value)}
-            />
-          </label>
+          <div className="row" style={{ gap: 8 }}>
+            <label style={{ flex: 1 }}>
+              Dauer (min)
+              <input
+                className="input"
+                type="number"
+                min={0}
+                value={dur}
+                onChange={(e) => setDur(e.target.value)}
+              />
+            </label>
+            <label style={{ width: 120 }}>
+              SUD vor
+              <input
+                className="input"
+                type="number"
+                min={0}
+                max={10}
+                value={sudB}
+                onChange={(e) => setSudB(e.target.value)}
+              />
+            </label>
+            <label style={{ width: 120 }}>
+              SUD nach
+              <input
+                className="input"
+                type="number"
+                min={0}
+                max={10}
+                value={sudA}
+                onChange={(e) => setSudA(e.target.value)}
+              />
+            </label>
+          </div>
         </div>
-
         <div className="modalActions">
-          <button className="btn btnSecondary" onClick={onClose}>
-            Schließen
-          </button>
           <button
             className="btn btnPrimary"
-            onClick={() => void handleSave()}
-            disabled={typeof caseId !== "number"}
+            disabled={!canSave}
+            onClick={async () => {
+              const ok = await onSave({
+                started_at: fromLocalInputValue(startedAt),
+                method,
+                duration_min: dur === "" ? null : Number(dur),
+                sud_before: sudB === "" ? null : Number(sudB),
+                sud_after: sudA === "" ? null : Number(sudA),
+              });
+              onClose(!!ok);
+            }}
           >
-            Sitzung speichern
+            Speichern
+          </button>
+          <button className="btn" onClick={() => onClose(false)}>
+            Abbrechen
           </button>
         </div>
       </div>
     </div>
   );
+}
+
+/* -------------------- Komponente: NewSessionDialog -------------------- */
+
+function NewSessionDialog({
+  clients,
+  initialClientId,
+  loadCases,
+  onClose,
+  canCreate,
+  onCreate,
+  inline = false,                // <— Standard: Overlay; wir schalten oben "inline"
+}: {
+  clients: Client[];
+  initialClientId?: number;
+  loadCases: (clientId: number) => Promise<Case[]>;
+  onClose: (changed: boolean) => void;
+  canCreate: boolean;
+  onCreate: (payload: {
+    case_id: number;
+    started_at: string;
+    method: Method;
+    duration_min?: number | null;
+    sud_before?: number | null;
+    sud_after?: number | null;
+  }) => Promise<boolean>;
+  inline?: boolean;
+}) {
+  const [clientId, setClientId] = useState<number | "">(initialClientId ?? "");
+  const [cases, setCases] = useState<Case[]>([]);
+  const [caseId, setCaseId] = useState<number | "">("");
+  const [startedAt, setStartedAt] = useState<string>(
+    toLocalInputValue(new Date().toISOString())
+  );
+  const [method, setMethod] = useState<Method>("aufloesende_hypnose");
+  const [dur, setDur] = useState<string>("");
+  const [sudB, setSudB] = useState<string>("");
+  const [sudA, setSudA] = useState<string>("");
+
+  useEffect(() => {
+    if (typeof clientId === "number") {
+      loadCases(clientId).then((cs) => {
+        setCases(cs);
+        setCaseId(cs.length > 0 ? cs[0].id : "");
+      });
+    } else {
+      setCases([]); setCaseId("");
+    }
+  }, [clientId, loadCases]);
+
+  const canSave =
+    canCreate && typeof clientId === "number" && typeof caseId === "number";
+
+  const form = (
+    <>
+      <label>
+        Klient
+        <select
+          className="input"
+          value={clientId}
+          onChange={(e) =>
+            setClientId(e.target.value === "" ? "" : Number(e.target.value))
+          }
+        >
+          <option value="">– auswählen –</option>
+          {clients.map((c) => (
+            <option key={c.id} value={c.id}>{`#${c.id} ${c.name}`}</option>
+          ))}
+        </select>
+      </label>
+
+      <label>
+        Fall / Anliegen
+        <select
+          className="input"
+          value={caseId}
+          onChange={(e) =>
+            setCaseId(e.target.value === "" ? "" : Number(e.target.value))
+          }
+          disabled={typeof clientId !== "number"}
+        >
+          {typeof clientId !== "number" && (
+            <option value="">– zuerst Klient wählen –</option>
+          )}
+          {cases.map((c) => (
+            <option key={c.id} value={c.id}>
+              {PROBLEM_LABELS[c.problem_category] ?? c.problem_category}{" "}
+              {c.status && c.status !== "open" ? "· (geschlossen)" : ""}
+            </option>
+          ))}
+          {cases.length === 0 && typeof clientId === "number" && (
+            <option value="">(Keine Fälle gefunden)</option>
+          )}
+        </select>
+      </label>
+
+      <label>
+        Datum/Zeit
+        <input
+          className="input"
+          type="datetime-local"
+          value={startedAt}
+          onChange={(e) => setStartedAt(e.target.value)}
+        />
+      </label>
+
+      <label>
+        Methode
+        <select
+          className="input"
+          value={method}
+          onChange={(e) => setMethod(e.target.value as Method)}
+        >
+          {METHODS.map((m) => (
+            <option key={m} value={m}>
+              {METHOD_LABELS[m]}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <div className="row" style={{ gap: 8 }}>
+        <label style={{ flex: 1 }}>
+          Dauer (min)
+          <input
+            className="input"
+            type="number"
+            min={0}
+            value={dur}
+            onChange={(e) => setDur(e.target.value)}
+          />
+        </label>
+        <label style={{ width: 120 }}>
+          SUD vor
+          <input
+            className="input"
+            type="number"
+            min={0}
+            max={10}
+            value={sudB}
+            onChange={(e) => setSudB(e.target.value)}
+          />
+        </label>
+        <label style={{ width: 120 }}>
+          SUD nach
+          <input
+            className="input"
+            type="number"
+            min={0}
+            max={10}
+            value={sudA}
+            onChange={(e) => setSudA(e.target.value)}
+          />
+        </label>
+      </div>
+    </>
+  );
+
+  const actions = (
+    <div className="actions" style={{ marginTop: 10 }}>
+      <button
+        className="btn btnPrimary"
+        disabled={!canSave}
+        onClick={async () => {
+          const ok = await onCreate({
+            case_id: caseId as number,
+            started_at: fromLocalInputValue(startedAt),
+            method,
+            duration_min: dur === "" ? null : Number(dur),
+            sud_before: sudB === "" ? null : Number(sudB),
+            sud_after: sudA === "" ? null : Number(sudA),
+          });
+          onClose(!!ok);
+        }}
+      >
+        Anlegen
+      </button>
+      <button className="btn" onClick={() => onClose(false)}>
+        Abbrechen
+      </button>
+      {!canCreate && (
+        <div className="hint">Dein Storage hat keine <code>addSession</code>-Funktion.</div>
+      )}
+    </div>
+  );
+
+  if (inline) {
+    return (
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Neue Sitzung</h3>
+        {form}
+        {actions}
+      </div>
+    );
+  }
+
+  return (
+    <div className="modalOverlay">
+      <div className="modal">
+        <div className="modalHeader">Neue Sitzung</div>
+        <div className="modalBody">{form}</div>
+        <div className="modalActions">
+          <button
+            className="btn btnPrimary"
+            disabled={!canSave}
+            onClick={async () => {
+              const ok = await onCreate({
+                case_id: caseId as number,
+                started_at: fromLocalInputValue(startedAt),
+                method,
+                duration_min: dur === "" ? null : Number(dur),
+                sud_before: sudB === "" ? null : Number(sudB),
+                sud_after: sudA === "" ? null : Number(sudA),
+              });
+              onClose(!!ok);
+            }}
+          >
+            Anlegen
+          </button>
+          <button className="btn" onClick={() => onClose(false)}>
+            Abbrechen
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------- kleine Utils -------------------- */
+
+function formatDateTime(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleString();
+}
+function toLocalInputValue(iso: string) {
+  const d = new Date(iso);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+function fromLocalInputValue(local: string) {
+  const d = new Date(local);
+  return d.toISOString();
 }

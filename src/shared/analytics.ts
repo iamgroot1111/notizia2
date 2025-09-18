@@ -1,5 +1,4 @@
 // src/shared/analytics.ts
-// src/shared/analytics.ts
 import type { Client, Case, Session, Method, Gender } from './domain'
 
 /** Zeile aus listAllSessionsExpanded */
@@ -54,6 +53,19 @@ function isoWeekKey(d0: Date) {
   const week = Math.ceil((((+d - +yearStart) / 86400000) + 1) / 7)
   return `${year}-W${String(week).padStart(2,'0')}`
 }
+// NEU (direkt nach den Helpern einfügen):
+
+const SOLVED = new Set(['solved', 'closed', 'done', 'abgeschlossen', 'erledigt']);
+
+/** Zentrale Abfrage, ob ein Case-Status als geschlossen gewertet wird. */
+export function isClosed(status?: string | null): boolean {
+  const s = (status ?? '').toLowerCase().trim();
+  if (!s) return false;
+  if (SOLVED.has(s)) return true;
+  // Aktuelle Logik: alles was NICHT 'open' ist, als geschlossen werten.
+  // (Später kannst du das verschärfen und nur SOLVED zulassen.)
+  return s !== 'open';
+}
 
 /* ------------------ Filter ------------------ */
 
@@ -101,11 +113,12 @@ export function runAnalytics(filtered: Row[]): Result {
     .filter((x):x is number => x != null)
 
   /* Gelöste Anliegen (einmalig pro Case) */
-  const closed = new Set<number>()
-  for (const r of filtered) {
-    // alles was nicht 'open' ist, als gelöst werten (kannst du später schärfer machen)
-    if ((r.case.status ?? 'open') !== 'open') closed.add(r.case.id)
-  }
+const closed = new Set<number>()
+for (const r of filtered) {
+  // alles was nicht 'open' ist, als gelöst werten (kannst du später schärfer machen)
+  if ((r.case.status ?? 'open') !== 'open') closed.add(r.case.id)
+}
+
 
   /* Trends */
   const byMonth = new Map<string, number>()
@@ -155,4 +168,176 @@ export function runAnalytics(filtered: Row[]): Result {
     byAgeClass: byAgeInit,
     byGender: g,
   }
+}
+export function distributionByGenderFromClients(clients: Client[]) {
+  const g = { w: 0, m: 0, d: 0, unknown: 0 as number };
+  for (const c of clients) {
+    if (c.gender === 'w') g.w++;
+    else if (c.gender === 'm') g.m++;
+    else if (c.gender === 'd') g.d++;
+    else g.unknown++;
+  }
+  return g;
+}
+// ---------- Verteilungen ----------
+
+// 1) Verteilung der Anliegen (Sessions zählen pro Kategorie)
+export function problemDistribution(rows: Row[]): Array<{ key: string; count: number }> {
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    const k = r.case.problem_category ?? 'other';
+    map.set(k, (map.get(k) ?? 0) + 1);
+  }
+  return [...map].map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count);
+}
+
+type GKey = 'w' | 'm' | 'd' | 'unknown';
+function gkey(g: Gender | null | undefined): GKey {
+  return g === 'w' || g === 'm' || g === 'd' ? g : 'unknown';
+}
+
+// 2) Verteilung Geschlecht × Anliegen
+export function genderByProblem(rows: Row[]): Array<{ problem: string; w: number; m: number; d: number; unknown: number }> {
+  const map = new Map<string, { w: number; m: number; d: number; unknown: number }>();
+  for (const r of rows) {
+    const p = r.case.problem_category ?? 'other';
+    const g = gkey(r.client.gender);
+    const rec = map.get(p) ?? { w: 0, m: 0, d: 0, unknown: 0 };
+    rec[g]++;
+    map.set(p, rec);
+  }
+  return [...map].map(([problem, v]) => ({ problem, ...v })).sort((a, b) => a.problem.localeCompare(b.problem));
+}
+
+// 3) Verteilung Geschlecht × Methode
+export function genderByMethod(rows: Row[]): Array<{ method: Method; w: number; m: number; d: number; unknown: number }> {
+  const map = new Map<Method, { w: number; m: number; d: number; unknown: number }>();
+  for (const r of rows) {
+    const m = r.session.method;
+    const g = gkey(r.client.gender);
+    const rec = map.get(m) ?? { w: 0, m: 0, d: 0, unknown: 0 };
+    rec[g]++;
+    map.set(m, rec);
+  }
+  return [...map].map(([method, v]) => ({ method, ...v })).sort((a, b) => String(a.method).localeCompare(String(b.method)));
+}
+
+// 4) Verteilung Altersklassen × Anliegen / Methode
+const AGE_CLASSES = [
+  { label: '0–17',  min: 0,  max: 17 },
+  { label: '18–29', min: 18, max: 29 },
+  { label: '30–44', min: 30, max: 44 },
+  { label: '45–59', min: 45, max: 59 },
+  { label: '60+',   min: 60, max: Infinity },
+] as const;
+
+function ageIndex(age: number | null | undefined): number | null {
+  if (typeof age !== 'number') return null;
+  for (let i = 0; i < AGE_CLASSES.length; i++) {
+    const c = AGE_CLASSES[i];
+    if (age >= c.min && age <= c.max) return i;
+  }
+  return null;
+}
+
+export function ageByProblem(rows: Row[]): Array<{ problem: string; buckets: { label: string; count: number }[] }> {
+  const map = new Map<string, number[]>();
+  for (const r of rows) {
+    const p = r.case.problem_category ?? 'other';
+    if (!map.has(p)) map.set(p, new Array(AGE_CLASSES.length + 1).fill(0)); // +1 für Unbekannt
+    const arr = map.get(p)!;
+    const idx = ageIndex(r.client.age);
+    if (idx == null) arr[AGE_CLASSES.length]++; else arr[idx]++;
+  }
+  return [...map].map(([problem, arr]) => ({
+    problem,
+    buckets: [
+      ...AGE_CLASSES.map((c, i) => ({ label: c.label, count: arr[i] })),
+      { label: 'Unbekannt', count: arr[AGE_CLASSES.length] },
+    ],
+  })).sort((a, b) => a.problem.localeCompare(b.problem));
+}
+
+export function ageByMethod(rows: Row[]): Array<{ method: Method; buckets: { label: string; count: number }[] }> {
+  const map = new Map<Method, number[]>();
+  for (const r of rows) {
+    const m = r.session.method;
+    if (!map.has(m)) map.set(m, new Array(AGE_CLASSES.length + 1).fill(0));
+    const arr = map.get(m)!;
+    const idx = ageIndex(r.client.age);
+    if (idx == null) arr[AGE_CLASSES.length]++; else arr[idx]++;
+  }
+  return [...map].map(([method, arr]) => ({
+    method,
+    buckets: [
+      ...AGE_CLASSES.map((c, i) => ({ label: c.label, count: arr[i] })),
+      { label: 'Unbekannt', count: arr[AGE_CLASSES.length] },
+    ],
+  })).sort((a, b) => String(a.method).localeCompare(String(b.method)));
+}
+
+// ---------- Ø Sitzungen je Fall ----------
+export function avgSessionsPerCaseByProblemAndMethod(
+  rows: Row[]
+): Array<{ problem: string; method: Method; avg: number; cases: number; sessions: number }> {
+  const caseProblem = new Map<number, string>();
+  const byCaseMethod = new Map<string, number>(); // `${case}|${method}` -> count
+
+  for (const r of rows) {
+    caseProblem.set(r.case.id, r.case.problem_category ?? 'other');
+    const key = `${r.case.id}|${r.session.method}`;
+    byCaseMethod.set(key, (byCaseMethod.get(key) ?? 0) + 1);
+  }
+
+  const groups = new Map<string, number[]>(); // `${problem}|${method}` -> [counts pro Case]
+  for (const [key, cnt] of byCaseMethod) {
+    const [caseIdStr, method] = key.split('|');
+    const caseId = Number(caseIdStr);
+    const problem = caseProblem.get(caseId) ?? 'other';
+    const gk = `${problem}|${method}`;
+    const arr = groups.get(gk) ?? [];
+    arr.push(cnt);
+    groups.set(gk, arr);
+  }
+
+  const out: Array<{ problem: string; method: Method; avg: number; cases: number; sessions: number }> = [];
+  for (const [k, arr] of groups) {
+    const [problem, method] = k.split('|') as [string, Method];
+    const sessions = arr.reduce((a, b) => a + b, 0);
+    const cases = arr.length;
+    out.push({ problem, method, avg: sessions / cases, cases, sessions });
+  }
+  out.sort((a, b) => b.avg - a.avg);
+  return out;
+}
+
+export function avgSessionsPerClosedCaseByMethod(
+  rows: Row[]
+): Array<{ method: Method; avg: number; cases: number; sessions: number }> {
+  const closedCaseIds = new Set<number>();
+  for (const r of rows) if (isClosed(r.case.status)) closedCaseIds.add(r.case.id);
+
+  const byCaseMethod = new Map<string, number>();
+  for (const r of rows) {
+    if (!closedCaseIds.has(r.case.id)) continue;
+    const key = `${r.case.id}|${r.session.method}`;
+    byCaseMethod.set(key, (byCaseMethod.get(key) ?? 0) + 1);
+  }
+
+  const groups = new Map<Method, number[]>();
+  for (const [k, cnt] of byCaseMethod) {
+    const method = k.split('|')[1] as Method;
+    const arr = groups.get(method) ?? [];
+    arr.push(cnt);
+    groups.set(method, arr);
+  }
+
+  const out: Array<{ method: Method; avg: number; cases: number; sessions: number }> = [];
+  for (const [method, arr] of groups) {
+    const sessions = arr.reduce((a, b) => a + b, 0);
+    const cases = arr.length;
+    out.push({ method, avg: sessions / cases, cases, sessions });
+  }
+  out.sort((a, b) => b.avg - a.avg);
+  return out;
 }

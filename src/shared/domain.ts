@@ -4,7 +4,8 @@ export type Client = {
   id: number
   name: string
   gender?: Gender | null
-  age?: number | null         // Jahre
+  age?: number | null 
+  anamnesis?: Anamnesis | null        // Jahre
 }
 
 export type ProblemCategory =
@@ -39,3 +40,33 @@ export type Session = {
   insights: string | null
   notes: string | null
 }
+
+export type TherapyEntry = {
+  type: string;                 // z. B. "Psychotherapie"
+  duration_months?: number | null; // "Wie lange?" in Monaten (optional)
+  completed?: boolean | null;   // "abgeschlossen?"
+  // optional später: started_at?: string; ended_at?: string;
+};
+
+export type MedicationEntry = {
+  name: string;
+  dosage?: string | null;       // z. B. "10 mg"
+  frequency?: string | null;    // z. B. "1x täglich"
+  current?: boolean | null;     // nimmt der Klient das aktuell?
+  // optional später: since?: string; until?: string; notes?: string;
+};
+
+export type Anamnesis = {
+  previous_therapies?: TherapyEntry[];
+  medications?: MedicationEntry[];
+
+  // Intake-Anliegen (optional, erzeugt noch KEINEN Case – nur Dokumentation)
+  initial_problem_category?: string | null;  // "Anliegen" (Kategorie)
+  initial_problem_text?: string | null;      // Freitext
+
+  // Geplante Methode (Text + passende kanonische Zuordnung)
+  planned_method_text?: string | null;       // frei eingegeben
+  planned_method?: Method | null;            // auf union gemappt: 'aufloesende_hypnose' | ...
+};
+
+
